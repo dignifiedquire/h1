@@ -14,7 +14,10 @@ mod date;
 mod request;
 mod response;
 
+pub mod middleware;
+
 pub use crate::app::*;
+pub use crate::middleware::Middleware;
 pub use crate::request::*;
 pub use crate::response::*;
 
@@ -26,6 +29,7 @@ pub trait Handler: Send + Sync {
 #[derive(Default)]
 pub struct H1 {
     router: PathTree<Box<dyn Handler>>,
+    middleware: Vec<Box<dyn Middleware>>,
 }
 
 impl H1 {
@@ -35,11 +39,23 @@ impl H1 {
         self
     }
 
+    /// Add middleware.
+    pub fn using<H: Middleware + Sized + 'static>(mut self, middleware: H) -> Self {
+        self.middleware.push(Box::new(middleware));
+        self
+    }
+
+    /// Start listening on this address.
     pub async fn listen<A: ToSocketAddrs>(self, addrs: A) -> io::Result<App> {
         let listener = net::TcpListener::bind(addrs).await?;
+        let Self {
+            middleware, router, ..
+        } = self;
+
         Ok(App {
             listener,
-            router: Arc::new(RwLock::new(self.router)),
+            middleware: Arc::new(RwLock::new(middleware)),
+            router: Arc::new(RwLock::new(router)),
         })
     }
 }

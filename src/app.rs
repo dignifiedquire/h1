@@ -3,13 +3,14 @@ use async_std::sync::RwLock;
 use async_std::{io, net, task};
 use path_tree::PathTree;
 
-use crate::{Handler, Request, Response};
+use crate::{Handler, Middleware, Request, Response};
 
 pub type Params<'a> = Vec<(&'a str, &'a str)>;
 
 pub struct App {
     pub(crate) listener: net::TcpListener,
     pub(crate) router: std::sync::Arc<RwLock<PathTree<Box<dyn Handler>>>>,
+    pub(crate) middleware: std::sync::Arc<RwLock<Vec<Box<dyn Middleware>>>>,
 }
 
 impl App {
@@ -19,14 +20,16 @@ impl App {
         while let Some(stream) = incoming.next().await {
             let stream = stream?;
             let router = self.router.clone();
+            let middleware = self.middleware.clone();
 
             task::spawn(async move {
                 let router = router.read().await;
+                let middleware = middleware.read().await;
                 // TODO: what about errors?
 
                 let (reader, writer) = &mut (&stream, &stream);
 
-                let response = process(reader, &*router).await.unwrap();
+                let response = process(reader, &*router, &*middleware).await.unwrap();
 
                 // Write header data
                 let header = response.header_encoded();
@@ -44,11 +47,12 @@ impl App {
 async fn process(
     stream: &mut &net::TcpStream,
     router: &PathTree<Box<dyn Handler>>,
+    middleware: &[Box<dyn Middleware>],
 ) -> io::Result<Response> {
     let mut buf = vec![0u8; 1024];
 
     while stream.read(&mut buf).await? > 0 {
-        if let Some(resp) = process_inner(&buf, router).await? {
+        if let Some(resp) = process_inner(&buf, router, middleware).await? {
             return Ok(resp);
         }
     }
@@ -59,6 +63,7 @@ async fn process(
 async fn process_inner(
     buf: &[u8],
     router: &PathTree<Box<dyn Handler>>,
+    middleware: &[Box<dyn Middleware>],
 ) -> io::Result<Option<Response>> {
     let mut headers = [httparse::EMPTY_HEADER; 16];
 
@@ -83,7 +88,7 @@ async fn process_inner(
             .collect(),
     );
 
-    let req = Request {
+    let mut req = Request {
         method,
         path,
         version,
@@ -93,6 +98,10 @@ async fn process_inner(
 
     let path = format!("/{}/{}", req.method(), req.path());
     dbg!(&path);
+
+    for mid in middleware {
+        mid.call(&mut req).await?;
+    }
 
     match router.find(&path) {
         Some((handler, params)) => {

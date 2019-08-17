@@ -3,7 +3,7 @@
 use async_std::{io, task};
 use async_trait::async_trait;
 
-use h1::{Handler, Params, Request, Response, H1};
+use h1::{middleware, Handler, Params, Request, Response, H1};
 
 pub struct GetRoot;
 
@@ -20,6 +20,7 @@ impl Handler for GetRoot {
 fn main() -> io::Result<()> {
     task::block_on(async {
         let app = H1::default()
+            .using(middleware::Logger::default())
             .get("/", GetRoot)
             .listen("localhost:3000")
             .await?;
