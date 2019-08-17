@@ -1,8 +1,10 @@
-use async_std::prelude::*;
 use async_std::sync::RwLock;
-use async_std::{io, net, task};
+use async_std::{io, net};
+use futures::io::AsyncBufReadExt;
+use futures::stream::TryStreamExt;
 use path_tree::PathTree;
 
+use crate::request::RequestsCodec;
 use crate::{Handler, Middleware, Request, Response};
 
 pub type Params<'a> = Vec<(&'a str, &'a str)>;
@@ -15,104 +17,59 @@ pub struct App {
 
 impl App {
     pub async fn run(&self) -> io::Result<()> {
-        let mut incoming = self.listener.incoming();
+        self.listener
+            .incoming()
+            .try_for_each_concurrent(/* limit */ 1000, |stream| {
+                let router = self.router.clone();
+                let middleware = self.middleware.clone();
 
-        while let Some(stream) = incoming.next().await {
-            let stream = stream?;
-            let router = self.router.clone();
-            let middleware = self.middleware.clone();
+                async move {
+                    let router = router.read().await;
+                    let middleware = middleware.read().await;
 
-            task::spawn(async move {
-                let router = router.read().await;
-                let middleware = middleware.read().await;
-                // TODO: what about errors?
+                    let (reader, writer) = &mut (&stream, &stream);
 
-                let (reader, writer) = &mut (&stream, &stream);
+                    let response = futures_codec::FramedRead::new(reader, RequestsCodec {})
+                        .and_then(|req| process_middleware(req, &*middleware))
+                        .and_then(|req| process_routes(req, &*router));
 
-                let response = process(reader, &*router, &*middleware).await.unwrap();
+                    // This is very sad and breaks our whole flow
+                    pin_utils::pin_mut!(response);
 
-                // Write header data
-                let header = response.header_encoded();
-                writer.write_all(header.as_bytes()).await.unwrap();
+                    response.into_async_read().copy_buf_into(writer).await?;
 
-                // Write body
-                writer.write_all(response.body_encoded()).await.unwrap();
-            });
-        }
+                    Ok(())
+                }
+            })
+            .await?;
 
         Ok(())
     }
 }
 
-async fn process(
-    stream: &mut &net::TcpStream,
-    router: &PathTree<Box<dyn Handler>>,
+async fn process_middleware(
+    mut req: Request,
     middleware: &[Box<dyn Middleware>],
-) -> io::Result<Response> {
-    let mut buf = vec![0u8; 1024];
-
-    while stream.read(&mut buf).await? > 0 {
-        if let Some(resp) = process_inner(&buf, router, middleware).await? {
-            return Ok(resp);
-        }
-    }
-
-    panic!("Failed to read a response")
-}
-
-async fn process_inner(
-    buf: &[u8],
-    router: &PathTree<Box<dyn Handler>>,
-    middleware: &[Box<dyn Middleware>],
-) -> io::Result<Option<Response>> {
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-
-    let mut r = httparse::Request::new(&mut headers);
-    let status = r.parse(&buf).map_err(|e| {
-        let msg = format!("failed to parse http request: {:?}", e);
-        io::Error::new(io::ErrorKind::Other, msg)
-    })?;
-
-    let amt = match status {
-        httparse::Status::Complete(amt) => amt,
-        httparse::Status::Partial => return Ok(None),
-    };
-
-    let (method, path, version, headers) = (
-        r.method.unwrap().as_bytes().to_vec(),
-        r.path.unwrap().as_bytes().to_vec(),
-        r.version.unwrap(),
-        r.headers
-            .iter()
-            .map(|h| (h.name.as_bytes().to_vec(), h.value.to_vec()))
-            .collect(),
-    );
-
-    let mut req = Request {
-        method,
-        path,
-        version,
-        headers,
-        data: buf[..amt].to_vec(),
-    };
-
-    let path = format!("/{}/{}", req.method(), req.path());
-    dbg!(&path);
-
+) -> io::Result<Request> {
     for mid in middleware {
         mid.call(&mut req).await?;
     }
 
-    match router.find(&path) {
-        Some((handler, params)) => {
-            let resp = handler.call(req, params).await?;
-            Ok(Some(resp))
-        }
+    Ok(req)
+}
+
+async fn process_routes(req: Request, router: &PathTree<Box<dyn Handler>>) -> io::Result<Vec<u8>> {
+    let path = format!("/{}/{}", req.method(), req.path());
+    log::trace!("{}", &path);
+
+    let resp = match router.find(&path) {
+        Some((handler, params)) => handler.call(req, params).await?,
         None => {
             let mut resp = Response::default();
             resp.status_code(404, "Not Found");
-
-            Ok(Some(resp))
+            resp
         }
-    }
+    };
+
+    Ok(resp.finalize())
 }

@@ -41,34 +41,36 @@ impl Response {
         self
     }
 
-    pub(crate) fn header_encoded(&self) -> String {
+    pub(crate) fn finalize(self) -> Vec<u8> {
         // TODO: do not allocate, and make a proper streaming writer thingy, when I am not tired anymore.
-        let mut data = format!(
-            "\
-             HTTP/1.1 {}\r\n\
-             Server: Example\r\n\
-             Content-Length: {}\r\n\
-             Date: {}\r\n\
-             ",
-            self.status_message,
-            self.response.len(),
-            date::now()
+        let mut data = Vec::with_capacity(10 + self.response.len());
+
+        data.extend_from_slice(
+            format!(
+                "\
+                 HTTP/1.1 {}\r\n\
+                 Server: Example\r\n\
+                 Content-Length: {}\r\n\
+                 Date: {}\r\n\
+                 ",
+                self.status_message,
+                self.response.len(),
+                date::now()
+            )
+            .as_bytes(),
         );
 
         for &(ref k, ref v) in &self.headers {
-            data += k;
-            data += ": ";
-            data += v;
-            data += "\r\n";
+            data.extend_from_slice(k.as_bytes());
+            data.extend_from_slice(b": ");
+            data.extend_from_slice(v.as_bytes());
+            data.extend_from_slice(b"\r\n");
         }
 
-        data += "\r\n";
+        data.extend_from_slice(b"\r\n");
+        data.extend_from_slice(&self.response[..]);
 
         data
-    }
-
-    pub(crate) fn body_encoded(&self) -> &[u8] {
-        self.response.as_slice()
     }
 }
 
