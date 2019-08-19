@@ -1,7 +1,6 @@
 use std::{fmt, str};
 
 use async_std::io;
-use futures::future::Either;
 use veryfast::pool::Object;
 
 pub use rentals::Request;
@@ -81,7 +80,7 @@ impl<'a> InnerRequest<'a> {
     }
 }
 
-pub fn decode(buf: Object<Vec<u8>>) -> io::Result<Either<Request, Object<Vec<u8>>>> {
+pub fn decode(buf: Object<Vec<u8>>) -> io::Result<Request> {
     match Request::try_new(buf, |buf| {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut r = httparse::Request::new(&mut headers);
@@ -89,16 +88,18 @@ pub fn decode(buf: Object<Vec<u8>>) -> io::Result<Either<Request, Object<Vec<u8>
             Ok(s) => s,
             Err(err) => {
                 let msg = format!("failed to parse http request: {:?}", err);
-                return Err(ParseError::Failure(io::Error::new(
-                    io::ErrorKind::Other,
-                    msg,
-                )));
+                return Err(io::Error::new(io::ErrorKind::Other, msg));
             }
         };
 
         match status {
             httparse::Status::Complete(amt) => amt,
-            httparse::Status::Partial => return Err(ParseError::Partial),
+            httparse::Status::Partial => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Malformed http header",
+                ))
+            }
         };
 
         Ok(InnerRequest {
@@ -112,13 +113,7 @@ pub fn decode(buf: Object<Vec<u8>>) -> io::Result<Either<Request, Object<Vec<u8>
                 .collect(),
         })
     }) {
-        Ok(req) => Ok(Either::Left(req)),
-        Err(rental::RentalError(ParseError::Partial, buf)) => Ok(Either::Right(buf)),
-        Err(rental::RentalError(ParseError::Failure(err), _buf)) => Err(err),
+        Ok(r) => Ok(r),
+        Err(rental::RentalError(err, _)) => Err(err),
     }
-}
-
-enum ParseError {
-    Failure(io::Error),
-    Partial,
 }

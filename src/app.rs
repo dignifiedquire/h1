@@ -1,7 +1,7 @@
+use async_std::io::BufReader;
 use async_std::prelude::*;
 use async_std::sync::RwLock;
 use async_std::{io, net, task};
-use futures::future::Either;
 use lazy_static::lazy_static;
 use path_tree::PathTree;
 use veryfast::pool::Pool;
@@ -33,18 +33,13 @@ impl App {
             task::spawn(async move {
                 let router = router.read().await;
                 let middleware = middleware.read().await;
-                // TODO: what about errors?
 
-                let (reader, writer) = &mut (&stream, &stream);
-
-                let response = process(reader, &*router, &*middleware).await.unwrap();
-
-                // Write header data
-                let header = response.header_encoded();
-                writer.write_all(header.as_bytes()).await.unwrap();
-
-                // Write body
-                writer.write_all(response.body_encoded()).await.unwrap();
+                match process(&stream, &*router, &*middleware).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("ERROR: {:?}", err);
+                    }
+                }
             });
         }
 
@@ -53,38 +48,34 @@ impl App {
 }
 
 async fn process(
-    stream: &mut &net::TcpStream,
+    mut stream: &net::TcpStream,
     router: &PathTree<Box<dyn Handler>>,
     middleware: &[Box<dyn Middleware>],
-) -> io::Result<Response> {
-    let mut buf = POOL.push(vec![0u8; 4096]);
-    let mut total_read = 0;
+) -> io::Result<()> {
+    let mut reader = BufReader::new(stream);
+    let mut buf = POOL.push(Vec::new());
 
     loop {
-        let read = stream.read(&mut buf).await?;
+        let read = reader.read_until(b'\n', &mut buf).await?;
+        let end = buf.len() - 1;
         if read == 0 {
             break;
-        }
-        total_read += read;
-
-        match decode(buf)? {
-            Either::Left(req) => {
-                dbg!(&req);
-                let resp = process_inner(req, router, middleware).await?;
-                return Ok(resp);
-            }
-            Either::Right(old_buf) => {
-                buf = old_buf;
-                // Grow the buffer if we need to
-                if total_read >= buf.len() {
-                    let l = buf.len();
-                    buf.resize(l + 256, 0);
-                }
-            }
+        } else if end >= 3 && buf[end - 3..=end] == [13, 10, 13, 10] {
+            // bounds check, then consecutive 'CRLF' check
+            break;
         }
     }
 
-    panic!("Failed to read a response")
+    let req = decode(buf)?;
+    let response = process_inner(req, router, middleware).await?;
+
+    // Write header data
+    let header = response.header_encoded();
+    stream.write_all(header.as_bytes()).await?;
+
+    // Write body
+    stream.write_all(response.body_encoded()).await?;
+    Ok(())
 }
 
 async fn process_inner(
