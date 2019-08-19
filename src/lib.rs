@@ -1,5 +1,8 @@
 #![feature(async_await)]
 
+#[macro_use]
+extern crate rental;
+
 use async_std::sync::RwLock;
 use async_std::{io, net};
 use std::net::ToSocketAddrs;
@@ -23,7 +26,7 @@ pub use crate::response::*;
 
 #[async_trait]
 pub trait Handler: Send + Sync {
-    async fn call(&self, request: Request, params: Params<'_>) -> io::Result<Response>;
+    async fn call(&self, request: Request<'_>, params: Params<'_>) -> io::Result<Response>;
 }
 
 #[derive(Default)]

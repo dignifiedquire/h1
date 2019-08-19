@@ -1,13 +1,19 @@
 use async_std::prelude::*;
 use async_std::sync::RwLock;
 use async_std::{io, net, task};
-use futures::io::AsyncRead;
+use futures::future::Either;
+use lazy_static::lazy_static;
 use path_tree::PathTree;
-use std::pin::Pin;
+use veryfast::pool::Pool;
 
+use crate::request::decode;
 use crate::{Handler, Middleware, Request, Response};
 
 pub type Params<'a> = Vec<(&'a str, &'a str)>;
+
+lazy_static! {
+    static ref POOL: Pool<Vec<u8>> = Pool::with_params(true);
+}
 
 pub struct App {
     pub(crate) listener: net::TcpListener,
@@ -46,78 +52,43 @@ impl App {
     }
 }
 
-use tendril::{SendTendril, Tendril};
-type ByteTendril = Tendril<tendril::fmt::Bytes, tendril::Atomic>;
-
 async fn process(
     stream: &mut &net::TcpStream,
     router: &PathTree<Box<dyn Handler>>,
     middleware: &[Box<dyn Middleware>],
 ) -> io::Result<Response> {
-    let mut buf: ByteTendril = Tendril::from_slice(&[0u8; 1024][..]);
+    let mut buf = POOL.push(vec![0u8; 4096]);
+    let mut total_read = 0;
 
-    while read_to_tendril(stream, &mut buf).await? > 0 {
-        let buf = buf.subtendril(0, buf.len32()).into_send();
-        if let Some(req) = parse_request(buf)? {
-            let resp = process_inner(req, router, middleware).await?;
-            return Ok(resp);
+    loop {
+        let read = stream.read(&mut buf).await?;
+        if read == 0 {
+            break;
+        }
+        total_read += read;
+
+        match decode(buf)? {
+            Either::Left(req) => {
+                dbg!(&req);
+                let resp = process_inner(req, router, middleware).await?;
+                return Ok(resp);
+            }
+            Either::Right(old_buf) => {
+                buf = old_buf;
+                // Grow the buffer if we need to
+                if total_read >= buf.len() {
+                    let l = buf.len();
+                    buf.resize(l + 256, 0);
+                }
+            }
         }
     }
 
     panic!("Failed to read a response")
 }
 
-async fn read_to_tendril<T>(stream: &mut T, buf: &mut ByteTendril) -> io::Result<usize>
-where
-    T: Unpin + AsyncRead,
-{
-    let mut stream = Pin::new(stream);
-    let read = futures::future::poll_fn(|cx| stream.as_mut().poll_read(cx, buf)).await?;
-    Ok(read)
-}
-
-fn parse_request(buf: SendTendril<tendril::fmt::Bytes>) -> io::Result<Option<Request>> {
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-    let mut buf: ByteTendril = buf.into();
-
-    let (method, path, version, headers, amt) = {
-        let mut r = httparse::Request::new(&mut headers);
-        let status = r.parse(&buf).map_err(|e| {
-            let msg = format!("failed to parse http request: {:?}", e);
-            io::Error::new(io::ErrorKind::Other, msg)
-        })?;
-
-        let amt = match status {
-            httparse::Status::Complete(amt) => amt,
-            httparse::Status::Partial => return Ok(None),
-        };
-
-        // TODO: stop allocating, but that requires a parser that understands
-        // Tendrils, not just byte slices.
-        (
-            r.method.unwrap().as_bytes().to_vec(),
-            r.path.unwrap().as_bytes().to_vec(),
-            r.version.unwrap(),
-            r.headers
-                .iter()
-                .map(|h| (h.name.as_bytes().to_vec(), h.value.to_vec()))
-                .collect(),
-            amt,
-        )
-    };
-    buf.pop_back(buf.len32() - amt as u32);
-
-    Ok(Some(Request {
-        method,
-        path,
-        version,
-        headers,
-        data: buf[..amt].to_vec(),
-    }))
-}
-
 async fn process_inner(
-    mut req: Request,
+    mut req: Request<'_>,
     router: &PathTree<Box<dyn Handler>>,
     middleware: &[Box<dyn Middleware>],
 ) -> io::Result<Response> {
