@@ -10,14 +10,14 @@ rental! {
         use super::*;
 
         #[rental]
-        pub struct Request<'a> {
-            data: Object<'a, Vec<u8>>,
+        pub struct Request {
+            data: Vec<u8>,//Object<'a, Vec<u8>>,
             request: InnerRequest<'data>,
         }
     }
 }
 
-impl<'a> fmt::Debug for Request<'a> {
+impl fmt::Debug for Request {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -32,7 +32,7 @@ impl<'a> fmt::Debug for Request<'a> {
     }
 }
 
-impl<'a> Request<'a> {
+impl Request {
     pub fn method(&self) -> &str {
         self.ref_rent(|req| req.method())
     }
@@ -80,7 +80,7 @@ impl<'a> InnerRequest<'a> {
     }
 }
 
-pub fn decode(buf: Object<Vec<u8>>) -> io::Result<Request> {
+pub fn decode(buf: Vec<u8> /*Object<Vec<u8>>*/) -> io::Result<Request> {
     match Request::try_new(buf, |buf| {
         let mut headers = [httparse::EMPTY_HEADER; 16];
         let mut r = httparse::Request::new(&mut headers);

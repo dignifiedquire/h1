@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use async_std::{io, task};
 use async_trait::async_trait;
 
@@ -9,7 +7,7 @@ pub struct GetRoot;
 
 #[async_trait]
 impl Handler for GetRoot {
-    async fn call(&self, _request: Request<'_>, _params: Params<'_>) -> io::Result<Response> {
+    async fn call(&self, _request: Request, _params: Params<'_>) -> io::Result<Response> {
         let mut resp = Response::default();
         resp.body("Hello, world!");
 

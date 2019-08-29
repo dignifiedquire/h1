@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 use async_std::{io, task};
 use async_trait::async_trait;
 
@@ -9,7 +7,7 @@ pub struct PlaintextRoute;
 
 #[async_trait]
 impl Handler for PlaintextRoute {
-    async fn call(&self, _request: Request<'_>, _params: Params<'_>) -> io::Result<Response> {
+    async fn call(&self, _request: Request, _params: Params<'_>) -> io::Result<Response> {
         let mut resp = Response::default();
         resp.header("Content-Type", "text/plain")
             .body("Hello, World!");
@@ -22,7 +20,7 @@ pub struct JsonRoute;
 
 #[async_trait]
 impl Handler for JsonRoute {
-    async fn call(&self, _request: Request<'_>, _params: Params<'_>) -> io::Result<Response> {
+    async fn call(&self, _request: Request, _params: Params<'_>) -> io::Result<Response> {
         let mut resp = Response::default();
         let json = serde_json::to_string(&serde_json::json!({
             "message": "Hello, World!"

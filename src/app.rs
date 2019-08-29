@@ -53,7 +53,7 @@ async fn process(
     middleware: &[Box<dyn Middleware>],
 ) -> io::Result<()> {
     let mut reader = BufReader::new(stream);
-    let mut buf = POOL.push(Vec::new());
+    let mut buf = vec![0; 4096]; // POOL.push(Vec::new());
 
     loop {
         let read = reader.read_until(b'\n', &mut buf).await?;
@@ -79,7 +79,7 @@ async fn process(
 }
 
 async fn process_inner(
-    mut req: Request<'_>,
+    mut req: Request,
     router: &PathTree<Box<dyn Handler>>,
     middleware: &[Box<dyn Middleware>],
 ) -> io::Result<Response> {

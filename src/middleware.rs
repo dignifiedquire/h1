@@ -5,7 +5,7 @@ use crate::Request;
 
 #[async_trait]
 pub trait Middleware: Send + Sync {
-    async fn call(&self, request: &mut Request<'_>) -> io::Result<()>;
+    async fn call(&self, request: &mut Request) -> io::Result<()>;
 }
 
 /// Log all requests.
@@ -23,7 +23,7 @@ impl Default for Logger {
 
 #[async_trait]
 impl Middleware for Logger {
-    async fn call(&self, request: &mut Request<'_>) -> io::Result<()> {
+    async fn call(&self, request: &mut Request) -> io::Result<()> {
         log::info!("[{}] {}", request.method(), request.path());
         Ok(())
     }

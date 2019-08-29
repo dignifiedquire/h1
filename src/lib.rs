@@ -1,5 +1,3 @@
-#![feature(async_await)]
-
 #[macro_use]
 extern crate rental;
 
@@ -25,8 +23,8 @@ pub use crate::request::*;
 pub use crate::response::*;
 
 #[async_trait]
-pub trait Handler: Send + Sync {
-    async fn call(&self, request: Request<'_>, params: Params<'_>) -> io::Result<Response>;
+pub trait Handler: Send + Sync + 'static {
+    async fn call(&self, request: Request, params: Params<'_>) -> io::Result<Response>;
 }
 
 #[derive(Default)]
@@ -36,7 +34,7 @@ pub struct H1 {
 }
 
 impl H1 {
-    pub fn get<H: Handler + Sized + 'static>(mut self, route: impl AsRef<str>, handle: H) -> Self {
+    pub fn get(mut self, route: impl AsRef<str>, handle: impl Handler) -> Self {
         self.router
             .insert(&format!("/GET/{}", route.as_ref()), Box::new(handle));
         self
